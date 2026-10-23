@@ -1,0 +1,12 @@
+{
+  "name": "agy-lsrpc-bridge",
+  "displayName": "Antigravity LSRPC Bridge & Plugin Manager",
+  "description": "ConnectRPC bridge to the Antigravity Language Server for context-safe plugin inventory, live JetboxWriteState toggling, safe uninstalls, and Antigravity 2.0 plugin validation and scaffolding.",
+  "version": "1.0.0",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "List all installed Antigravity plugins and their health status",
+    "Validate all plugins in the current workspace against Antigravity 2.0 rules",
+    "Scaffold a new Antigravity 2.0 native plugin bundle"
+  ]
+}

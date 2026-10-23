@@ -1,0 +1,25 @@
+# Python & packaging
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.pytest_cache/
+
+# AgentOps ephemeral state
+.supergraph/
+.agents-learning/
+.monitor/
+.agents/teamwork/
+
+# Secrets & local configs
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.key
+*.pem
