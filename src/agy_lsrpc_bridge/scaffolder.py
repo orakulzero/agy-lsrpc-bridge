@@ -166,6 +166,7 @@ You are the specialized autonomous agent for `{clean_name}`. Follow `skills/{cle
                 f"{clean_name}-server": {
                     "command": "python",
                     "args": ["-m", clean_name.replace("-", "_")],
+                    "timeout_ms": 15000,
                 }
             }
         }

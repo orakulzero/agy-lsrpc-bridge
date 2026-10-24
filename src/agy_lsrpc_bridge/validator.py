@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 ALLOWED_PLUGIN_MANIFEST_KEYS: Set[str] = {
     "name",
@@ -28,6 +28,52 @@ ALLOWED_PLUGIN_MANIFEST_KEYS: Set[str] = {
 }
 
 ALLOWED_LOGO_EXTENSIONS: Set[str] = {".svg", ".png", ".jpg", ".jpeg", ".webp"}
+VALID_IDENTIFIER_RE = re.compile(r"^[a-zA-Z0-9_.\-:]+$")
+MAX_COMPOSITE_LEN = 64
+
+
+def validate_mcp_config_strict(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """Strictly validate MCP configuration enforcing <=64-char names and timeout_ms > 0."""
+    servers = config.get("mcpServers") if isinstance(config, dict) else None
+    if not isinstance(servers, dict):
+        return False, ["mcp_config.json 'mcpServers' must be an object"]
+
+    errors: List[str] = []
+    for orig_srv, srv_cfg in servers.items():
+        srv_str = str(orig_srv)
+        if not isinstance(srv_cfg, dict):
+            errors.append(f"Server '{srv_str}' configuration must be an object")
+            continue
+
+        timeout_val = srv_cfg.get("timeout_ms")
+        if not isinstance(timeout_val, int) or isinstance(timeout_val, bool) or timeout_val <= 0:
+            errors.append(f"Server '{srv_str}' is missing a positive integer 'timeout_ms'.")
+
+        tools = srv_cfg.get("tools")
+        tool_names: List[str] = []
+        if isinstance(tools, list):
+            tool_names = [str(t) for t in tools]
+        elif isinstance(tools, dict):
+            tool_names = [str(t) for t in tools.keys()]
+
+        if tool_names:
+            for tool_name in tool_names:
+                composite = f"mcp_{srv_str}_{tool_name}"
+                if not VALID_IDENTIFIER_RE.match(composite):
+                    errors.append(f"Identifier '{composite}' contains invalid characters.")
+                if len(composite) > MAX_COMPOSITE_LEN:
+                    errors.append(
+                        f"Identifier '{composite}' exceeds 64 characters (length: {len(composite)})."
+                    )
+        else:
+            if not VALID_IDENTIFIER_RE.match(f"mcp_{srv_str}"):
+                errors.append(f"Server '{srv_str}' contains invalid characters.")
+            if len(f"mcp_{srv_str}_") >= MAX_COMPOSITE_LEN:
+                errors.append(
+                    f"Server prefix 'mcp_{srv_str}_' exceeds or equals 64 characters."
+                )
+
+    return len(errors) == 0, errors
 
 
 def parse_jsonc(raw_text: str) -> Any:
@@ -75,6 +121,7 @@ def parse_jsonc(raw_text: str) -> Any:
 def validate_plugin_bundle(
     plugin_dir: Path,
     installed_names: Optional[List[str]] = None,
+    strict_mcp: bool = False,
 ) -> Dict[str, Any]:
     """Audit an Antigravity 2.0 plugin directory against all loader and runtime rules."""
     pdir = Path(plugin_dir).resolve()
@@ -189,7 +236,7 @@ def validate_plugin_bundle(
                     f"Rule file 'rules/{rule_file.name}' must be plain markdown without YAML frontmatter ('---')"
                 )
 
-    # 6. Check mcp_config.json server names are prefixed with plugin_name
+    # 6. Check mcp_config.json server names are prefixed with plugin_name, timeout_ms, and <=64-char limit
     mcp_path = pdir / "mcp_config.json"
     if mcp_path.is_file():
         try:
@@ -198,15 +245,52 @@ def validate_plugin_bundle(
             if not isinstance(servers, dict):
                 errors.append("mcp_config.json 'mcpServers' must be an object")
             else:
-                for srv_name in servers:
-                    if not str(srv_name).startswith(plugin_name):
+                for srv_name, srv_cfg in servers.items():
+                    srv_str = str(srv_name)
+                    if not srv_str.startswith(plugin_name):
                         errors.append(
                             f"MCP server '{srv_name}' in mcp_config.json must be prefixed with plugin name '{plugin_name}' to avoid global namespace collisions"
                         )
-                    if len(str(srv_name)) > 48:
+                    if len(srv_str) > 48:
                         warnings.append(
-                            f"MCP server '{srv_name}' is {len(str(srv_name))} chars; keep short so mcp_<server>_<tool> stays under 64 chars"
+                            f"MCP server '{srv_name}' is {len(srv_str)} chars; keep short so mcp_<server>_<tool> stays under 64 chars"
                         )
+                    if isinstance(srv_cfg, dict):
+                        timeout_val = srv_cfg.get("timeout_ms")
+                        if timeout_val is None:
+                            if strict_mcp:
+                                errors.append(
+                                    f"Server '{srv_name}' is missing a positive integer 'timeout_ms'."
+                                )
+                            else:
+                                warnings.append(
+                                    f"Server '{srv_name}' is missing recommended 'timeout_ms'."
+                                )
+                        elif not isinstance(timeout_val, int) or isinstance(timeout_val, bool) or timeout_val <= 0:
+                            errors.append(
+                                f"Server '{srv_name}' 'timeout_ms' must be a positive integer, got {timeout_val!r}."
+                            )
+
+                        tools = srv_cfg.get("tools")
+                        tool_names: List[str] = []
+                        if isinstance(tools, list):
+                            tool_names = [str(t) for t in tools]
+                        elif isinstance(tools, dict):
+                            tool_names = [str(t) for t in tools.keys()]
+
+                        for tname in tool_names:
+                            comp = f"mcp_{srv_str}_{tname}"
+                            if not VALID_IDENTIFIER_RE.match(comp):
+                                errors.append(f"Identifier '{comp}' contains invalid characters.")
+                            if len(comp) > MAX_COMPOSITE_LEN:
+                                errors.append(
+                                    f"Identifier '{comp}' exceeds 64 characters (length: {len(comp)})."
+                                )
+                if strict_mcp:
+                    ok_strict, strict_errs = validate_mcp_config_strict(mcp_data)
+                    for serr in strict_errs:
+                        if serr not in errors:
+                            errors.append(serr)
         except Exception as exc:
             errors.append(f"Invalid JSON in mcp_config.json: {exc}")
 
