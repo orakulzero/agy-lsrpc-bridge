@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 ALLOWED_PLUGIN_MANIFEST_KEYS: Set[str] = {
     "name",
@@ -300,4 +300,276 @@ def validate_plugin_bundle(
         "warnings": warnings,
         "plugin_name": plugin_name,
         "dir_name": dir_name,
+    }
+
+
+def analyze_mcp_token_budget(
+    config: Union[Dict[str, Any], Path, str],
+    max_token_budget: int = 8000,
+) -> Dict[str, Any]:
+    """
+    Analyze token budget and footprint for an MCP configuration, file path, or JSON string.
+    Computes estimated token footprint per server / tool (~4 chars per token),
+    flags servers/tools exceeding thresholds or the 64-char composite name limit,
+    and returns actionable optimization recommendations.
+    """
+    raw_data: Any = None
+    if isinstance(config, Path):
+        if not config.is_file():
+            return {
+                "total_estimated_tokens": 0,
+                "budget_limit": max_token_budget,
+                "within_budget": False,
+                "servers": {},
+                "recommendations": [f"Configuration file not found: {config}"],
+            }
+        try:
+            raw_data = parse_jsonc(config.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {
+                "total_estimated_tokens": 0,
+                "budget_limit": max_token_budget,
+                "within_budget": False,
+                "servers": {},
+                "recommendations": [f"Malformed JSON in configuration file: {exc}"],
+            }
+    elif isinstance(config, str):
+        is_path = False
+        try:
+            p = Path(config)
+            if p.is_file():
+                is_path = True
+                try:
+                    raw_data = parse_jsonc(p.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    return {
+                        "total_estimated_tokens": 0,
+                        "budget_limit": max_token_budget,
+                        "within_budget": False,
+                        "servers": {},
+                        "recommendations": [f"Malformed JSON in configuration file: {exc}"],
+                    }
+        except Exception:
+            is_path = False
+
+        if not is_path:
+            stripped = config.strip()
+            if not stripped:
+                return {
+                    "total_estimated_tokens": 0,
+                    "budget_limit": max_token_budget,
+                    "within_budget": True,
+                    "servers": {},
+                    "recommendations": ["Empty configuration provided."],
+                }
+            try:
+                raw_data = parse_jsonc(stripped)
+            except Exception as exc:
+                return {
+                    "total_estimated_tokens": 0,
+                    "budget_limit": max_token_budget,
+                    "within_budget": False,
+                    "servers": {},
+                    "recommendations": [f"Malformed JSON configuration: {exc}"],
+                }
+    elif isinstance(config, dict):
+        raw_data = config
+    elif config is None:
+        return {
+            "total_estimated_tokens": 0,
+            "budget_limit": max_token_budget,
+            "within_budget": True,
+            "servers": {},
+            "recommendations": ["Empty configuration provided."],
+        }
+    else:
+        return {
+            "total_estimated_tokens": 0,
+            "budget_limit": max_token_budget,
+            "within_budget": False,
+            "servers": {},
+            "recommendations": [f"Invalid configuration type: {type(config).__name__}"],
+        }
+
+    if not isinstance(raw_data, dict):
+        return {
+            "total_estimated_tokens": 0,
+            "budget_limit": max_token_budget,
+            "within_budget": False,
+            "servers": {},
+            "recommendations": ["Configuration root must be a JSON object."],
+        }
+
+    if "mcpServers" in raw_data and isinstance(raw_data["mcpServers"], dict):
+        servers_map = raw_data["mcpServers"]
+    else:
+        servers_map = raw_data
+
+    servers_result: Dict[str, Any] = {}
+    recommendations: List[str] = []
+    total_tokens = 0
+
+    for srv_name, srv_cfg in servers_map.items():
+        srv_str = str(srv_name)
+        if not isinstance(srv_cfg, dict):
+            servers_result[srv_str] = {
+                "tool_count": 0,
+                "max_tool_name_length": 0,
+                "char_footprint": 0,
+                "estimated_tokens": 0,
+                "within_budget": True,
+                "exceeds_64_char_limit": False,
+                "tools": {},
+                "warnings": [f"Server '{srv_str}' configuration must be an object"],
+            }
+            recommendations.append(f"Server '{srv_str}' is invalid; must be an object configuration.")
+            continue
+
+        tools_field = srv_cfg.get("tools")
+        tool_records: Dict[str, Any] = {}
+        max_tool_name_len = 0
+        srv_exceeds_64 = False
+
+        if isinstance(tools_field, list):
+            for t in tools_field:
+                if isinstance(t, dict):
+                    tname = str(t.get("name") or "unnamed_tool")
+                    tdesc = str(t.get("description") or "")
+                    t_chars = len(json.dumps(t, ensure_ascii=False))
+                    t_tokens = (t_chars + 3) // 4
+                elif isinstance(t, str):
+                    tname = t
+                    tdesc = ""
+                    t_chars = len(tname)
+                    t_tokens = (t_chars + 3) // 4
+                else:
+                    tname = str(t)
+                    tdesc = ""
+                    t_chars = len(tname)
+                    t_tokens = (t_chars + 3) // 4
+
+                comp_name = f"mcp_{srv_str}_{tname}"
+                comp_len = len(comp_name)
+                t_exceeds_64 = comp_len > 64 or len(tname) > 64
+                if t_exceeds_64:
+                    srv_exceeds_64 = True
+
+                if len(tname) > max_tool_name_len:
+                    max_tool_name_len = len(tname)
+
+                tool_records[tname] = {
+                    "composite_identifier": comp_name,
+                    "identifier_length": comp_len,
+                    "exceeds_64_char": t_exceeds_64,
+                    "char_footprint": t_chars,
+                    "estimated_tokens": t_tokens,
+                    "description_length": len(tdesc),
+                }
+
+                if len(tdesc) > 500:
+                    recommendations.append(
+                        f"Tool '{tname}' in server '{srv_str}' has a verbose description ({len(tdesc)} chars). "
+                        f"Trimming to <=200 chars can save ~{(len(tdesc) - 200) // 4} tokens."
+                    )
+        elif isinstance(tools_field, dict):
+            for tname, tval in tools_field.items():
+                tname_str = str(tname)
+                tdesc = ""
+                if isinstance(tval, dict):
+                    tdesc = str(tval.get("description") or "")
+                    t_chars = len(json.dumps(tval, ensure_ascii=False)) + len(tname_str)
+                else:
+                    t_chars = len(str(tval)) + len(tname_str)
+                t_tokens = (t_chars + 3) // 4
+
+                comp_name = f"mcp_{srv_str}_{tname_str}"
+                comp_len = len(comp_name)
+                t_exceeds_64 = comp_len > 64 or len(tname_str) > 64
+                if t_exceeds_64:
+                    srv_exceeds_64 = True
+
+                if len(tname_str) > max_tool_name_len:
+                    max_tool_name_len = len(tname_str)
+
+                tool_records[tname_str] = {
+                    "composite_identifier": comp_name,
+                    "identifier_length": comp_len,
+                    "exceeds_64_char": t_exceeds_64,
+                    "char_footprint": t_chars,
+                    "estimated_tokens": t_tokens,
+                    "description_length": len(tdesc),
+                }
+
+                if len(tdesc) > 500:
+                    recommendations.append(
+                        f"Tool '{tname_str}' in server '{srv_str}' has a verbose description ({len(tdesc)} chars). "
+                        f"Trimming to <=200 chars can save ~{(len(tdesc) - 200) // 4} tokens."
+                    )
+        else:
+            prefix_len = len(f"mcp_{srv_str}_")
+            if prefix_len >= 64:
+                srv_exceeds_64 = True
+
+        srv_char_footprint = len(json.dumps(srv_cfg, ensure_ascii=False))
+        srv_tokens = (srv_char_footprint + 3) // 4
+        total_tokens += srv_tokens
+
+        srv_within_budget = srv_tokens <= max_token_budget
+
+        warnings: List[str] = []
+        if srv_exceeds_64:
+            warnings.append(
+                f"Server '{srv_str}' has tool identifiers exceeding the 64-character Antigravity limit."
+            )
+            recommendations.append(
+                f"Shorten server name '{srv_str}' or long tool identifiers to keep composite 'mcp_{srv_str}_<tool>' <= 64 chars."
+            )
+
+        if len(tool_records) > 20:
+            warnings.append(f"Server '{srv_str}' defines {len(tool_records)} tools.")
+            recommendations.append(
+                f"Server '{srv_str}' has {len(tool_records)} tools. Consider chunking into domain-specific servers."
+            )
+
+        if srv_tokens > (max_token_budget // 2):
+            warnings.append(
+                f"Server '{srv_str}' consumes {srv_tokens} tokens (>50% of total budget {max_token_budget})."
+            )
+            recommendations.append(
+                f"Server '{srv_str}' consumes {srv_tokens} tokens ({srv_tokens * 100 // max_token_budget}% of budget). "
+                f"Prune redundant inputSchema parameters or lazy-load tools."
+            )
+
+        servers_result[srv_str] = {
+            "tool_count": len(tool_records),
+            "max_tool_name_length": max_tool_name_len,
+            "char_footprint": srv_char_footprint,
+            "estimated_tokens": srv_tokens,
+            "within_budget": srv_within_budget,
+            "exceeds_64_char_limit": srv_exceeds_64,
+            "tools": tool_records,
+            "warnings": warnings,
+        }
+
+    within_budget = total_tokens <= max_token_budget
+    if not within_budget:
+        recommendations.insert(
+            0,
+            f"Total estimated token footprint ({total_tokens}) exceeds maximum budget ({max_token_budget}). "
+            f"Reduce schema complexity, trim long descriptions, or prune unused MCP servers."
+        )
+
+    deduped_recommendations: List[str] = []
+    seen_recs: Set[str] = set()
+    for r in recommendations:
+        if r not in seen_recs:
+            seen_recs.add(r)
+            deduped_recommendations.append(r)
+
+    return {
+        "total_estimated_tokens": total_tokens,
+        "budget_limit": max_token_budget,
+        "within_budget": within_budget,
+        "servers": servers_result,
+        "recommendations": deduped_recommendations,
     }

@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 import urllib.error
 import urllib.request
 
@@ -429,6 +429,202 @@ class LSRPCClient:
             "live_rpc": rpc_ok,
             "restart_required": False,
             "customizationLink": f"[{plugin_name}](customization://{dir_name})",
+        }
+
+    def _rollback_batch(self, applied_records: List[Dict[str, Any]]) -> None:
+        """Roll back applied mutations in reverse order, restoring previous states."""
+        for rec in reversed(applied_records):
+            dir_name = rec["dir"]
+            prev_state = rec["previous_enabled"]
+            try:
+                self.call_rpc(
+                    "JetboxWriteState",
+                    {
+                        "userConfig": {
+                            "plugins": {dir_name: {"enabled": prev_state}}
+                        }
+                    },
+                )
+            except Exception:
+                pass
+
+            try:
+                cfg = self._read_local_config_json()
+                plugins_map = cfg.get("plugins")
+                if isinstance(plugins_map, dict) and dir_name in plugins_map:
+                    plugins_map[dir_name]["enabled"] = prev_state
+                    self._write_local_config_json_atomic(cfg)
+            except Exception:
+                pass
+
+    def batch_set_plugin_states(
+        self,
+        states: Union[Sequence[Tuple[str, bool]], Dict[str, bool]],
+        rollback_on_error: bool = True,
+        workspace_uris: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Transactional batch plugin state manager.
+        Applies a series of plugin enable/disable mutations keyed strictly on install directory (`dir`).
+        If rollback_on_error=True, any failure rolls back previously applied mutations in reverse order.
+        """
+        if isinstance(states, dict):
+            items = list(states.items())
+        elif isinstance(states, (list, tuple)):
+            items = list(states)
+        else:
+            raise TypeError(
+                f"states must be a dict or sequence of (dir, enabled) tuples, got {type(states).__name__}"
+            )
+
+        if not items:
+            return {
+                "success": True,
+                "applied": [],
+                "rolled_back": False,
+                "error": None,
+            }
+
+        # Retrieve inventory to resolve install directory and record initial states
+        inventory = self.list_plugins(workspace_uris=workspace_uris)
+        dir_map: Dict[str, Dict[str, Any]] = {p["dir"]: p for p in inventory}
+        name_map: Dict[str, Dict[str, Any]] = {
+            p["name"]: p for p in inventory if p.get("name") and p["name"] != p["dir"]
+        }
+
+        # Keep track of initial states for all plugins present in inventory
+        initial_states: Dict[str, bool] = {
+            p["dir"]: (not bool(p.get("disabled", False))) for p in inventory
+        }
+
+        applied_records: List[Dict[str, Any]] = []
+        errors: List[str] = []
+
+        for item in items:
+            if not isinstance(item, (tuple, list)) or len(item) != 2:
+                err_msg = f"Each item in states must be a (dir, enabled) tuple, got {item!r}"
+                if rollback_on_error:
+                    self._rollback_batch(applied_records)
+                    return {
+                        "success": False,
+                        "applied": applied_records,
+                        "rolled_back": True,
+                        "error": err_msg,
+                    }
+                errors.append(err_msg)
+                continue
+
+            target_key, target_enabled = item
+            bool_enabled = bool(target_enabled)
+
+            # Strict directory validation: reject manifest names and missing dirs
+            if not isinstance(target_key, str) or not target_key.strip():
+                err_msg = "Plugin directory key must be a non-empty string"
+                if rollback_on_error:
+                    self._rollback_batch(applied_records)
+                    return {
+                        "success": False,
+                        "applied": applied_records,
+                        "rolled_back": True,
+                        "error": err_msg,
+                    }
+                errors.append(err_msg)
+                continue
+
+            clean_key = target_key.strip()
+            if clean_key in name_map and clean_key not in dir_map:
+                err_msg = (
+                    f"Plugin key '{clean_key}' is a manifest name, not an install directory ('dir'). "
+                    f"Mutations must be keyed strictly on install directory (use '{name_map[clean_key]['dir']}')."
+                )
+                if rollback_on_error:
+                    self._rollback_batch(applied_records)
+                    return {
+                        "success": False,
+                        "applied": applied_records,
+                        "rolled_back": True,
+                        "error": err_msg,
+                    }
+                errors.append(err_msg)
+                continue
+
+            if clean_key not in dir_map:
+                err_msg = f"Plugin directory '{clean_key}' not found in installed plugins inventory"
+                if rollback_on_error:
+                    self._rollback_batch(applied_records)
+                    return {
+                        "success": False,
+                        "applied": applied_records,
+                        "rolled_back": True,
+                        "error": err_msg,
+                    }
+                errors.append(err_msg)
+                continue
+
+            record = dir_map[clean_key]
+            plugin_name = str(record.get("name") or clean_key)
+            prev_enabled = initial_states[clean_key]
+
+            # Apply mutation via JetboxWriteState and local config.json
+            try:
+                rpc_ok = False
+                try:
+                    self.call_rpc(
+                        "JetboxWriteState",
+                        {
+                            "userConfig": {
+                                "plugins": {clean_key: {"enabled": bool_enabled}}
+                            }
+                        },
+                    )
+                    rpc_ok = True
+                except ConnectionError:
+                    # Language server offline fallback
+                    rpc_ok = False
+                except Exception as rpc_exc:
+                    # Live RPC error during mutation
+                    raise rpc_exc
+
+                cfg = self._read_local_config_json()
+                plugins_map = cfg.get("plugins")
+                if not isinstance(plugins_map, dict):
+                    plugins_map = {}
+                    cfg["plugins"] = plugins_map
+                entry = plugins_map.get(clean_key)
+                if not isinstance(entry, dict):
+                    entry = {}
+                entry["enabled"] = bool_enabled
+                plugins_map[clean_key] = entry
+                self._write_local_config_json_atomic(cfg)
+
+                applied_records.append(
+                    {
+                        "dir": clean_key,
+                        "name": plugin_name,
+                        "enabled": bool_enabled,
+                        "previous_enabled": prev_enabled,
+                        "live_rpc": rpc_ok,
+                        "ok": True,
+                    }
+                )
+            except Exception as exc:
+                err_msg = str(exc)
+                if rollback_on_error:
+                    self._rollback_batch(applied_records)
+                    return {
+                        "success": False,
+                        "applied": applied_records,
+                        "rolled_back": True,
+                        "error": err_msg,
+                    }
+                errors.append(err_msg)
+
+        has_errors = len(errors) > 0
+        return {
+            "success": not has_errors,
+            "applied": applied_records,
+            "rolled_back": False,
+            "error": "; ".join(errors) if has_errors else None,
         }
 
     def uninstall_plugin(
