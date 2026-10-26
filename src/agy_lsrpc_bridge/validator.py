@@ -12,6 +12,7 @@ Enforces:
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import re
@@ -573,3 +574,299 @@ def analyze_mcp_token_budget(
         "servers": servers_result,
         "recommendations": deduped_recommendations,
     }
+
+
+# Boilerplate prefix patterns to strip deterministically
+_BOILERPLATE_PREFIXES = [
+    # Tool-level introductions
+    re.compile(
+        r"^(?:this\s+)?(?:tool|function|method|endpoint|service|routine|api)\s+"
+        r"(?:allows\s+(?:you|the\s+user)\s+to|is\s+used\s+to|allows\s+to|is\s+designed\s+to|serves\s+to|will|can)\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:used\s+to|allows\s+(?:you|the\s+user)\s+to|provides\s+(?:the\s+ability\s+to|a\s+way\s+to))\s*",
+        re.IGNORECASE,
+    ),
+    # Parameter-level intros
+    re.compile(
+        r"^(?:an?|the)\s+(?:optional|required)?\s*"
+        r"(?:string|boolean|integer|number|array|object|float|dict|list|mapping)\s+"
+        r"(?:representing|specifying|indicating|denoting|holding|defining|containing|providing|which\s+is|that\s+is)\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:a|an|the)\s+(?:parameter|argument|field|property|flag|value)\s+"
+        r"(?:that|which)?\s*(?:specifies|indicates|represents|defines|holds|determines|denotes)?\s*",
+        re.IGNORECASE,
+    ),
+    # Disclaimers / notes
+    re.compile(
+        r"^(?:please\s+note\s+that|note:|notice:|important:)\s*",
+        re.IGNORECASE,
+    ),
+]
+
+
+def _compact_text(text: str, is_property: bool = False) -> str:
+    """Compact a single description string cleanly and deterministically."""
+    if not text or not isinstance(text, str):
+        return text
+
+    cleaned = text.strip()
+
+    # Flatten redundant whitespace, line breaks, HTML tags, and markdown bold/italic
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+    cleaned = re.sub(r"[*_]{1,3}", "", cleaned)
+    cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+
+    # Iteratively strip matched boilerplate prefixes
+    changed = True
+    while changed:
+        changed = False
+        for pattern in _BOILERPLATE_PREFIXES:
+            new_text = pattern.sub("", cleaned).strip()
+            if new_text != cleaned:
+                cleaned = new_text
+                changed = True
+
+    # Strip redundant leading articles if followed by noun
+    cleaned = re.sub(r"^(?:the|a|an)\s+", "", cleaned, flags=re.IGNORECASE).strip()
+
+    # Extract first sentence
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    first_sentence = sentences[0].strip() if sentences else cleaned
+
+    # Sentence length bounds: tools <= 110 chars, properties <= 65 chars
+    max_len = 65 if is_property else 110
+
+    if len(first_sentence) > max_len:
+        truncated = first_sentence[: max_len - 3]
+        last_space = truncated.rfind(" ")
+        if last_space > 20:
+            truncated = truncated[:last_space]
+        first_sentence = truncated.rstrip(",;:- ") + "..."
+
+    # Ensure capitalized start and trailing punctuation
+    if first_sentence:
+        first_sentence = first_sentence[0].upper() + first_sentence[1:]
+        if not first_sentence.endswith((".", "!", "?", "...")):
+            first_sentence += "."
+
+    return first_sentence
+
+
+def _compact_schema_node(node: Any, is_property: bool = False) -> Any:
+    """Recursively traverse schema dictionary and compact description values."""
+    if isinstance(node, dict):
+        compacted_dict: Dict[str, Any] = {}
+        for key, val in node.items():
+            if key == "description" and isinstance(val, str):
+                compacted_dict[key] = _compact_text(val, is_property=is_property)
+            elif key == "properties" and isinstance(val, dict):
+                compacted_props = {
+                    p_name: _compact_schema_node(p_val, is_property=True)
+                    for p_name, p_val in val.items()
+                }
+                compacted_dict[key] = compacted_props
+            elif key == "tools" and isinstance(val, list):
+                compacted_dict[key] = [
+                    _compact_schema_node(t, is_property=False) for t in val
+                ]
+            else:
+                compacted_dict[key] = _compact_schema_node(val, is_property=is_property)
+        return compacted_dict
+
+    if isinstance(node, list):
+        return [_compact_schema_node(item, is_property=is_property) for item in node]
+
+    return node
+
+
+def compact_mcp_schema_descriptions(
+    schema: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Recursively compact verbose descriptions in an MCP schema."""
+    if not isinstance(schema, dict) or not schema:
+        return schema if isinstance(schema, dict) else {}, {
+            "original_chars": 0,
+            "compacted_chars": 0,
+            "reduction_pct": 0.0,
+            "original_tokens": 0,
+            "compacted_tokens": 0,
+            "tokens_saved": 0,
+        }
+
+    original_copy = copy.deepcopy(schema)
+    compacted = _compact_schema_node(original_copy, is_property=False)
+
+    orig_json = json.dumps(original_copy, sort_keys=True)
+    comp_json = json.dumps(compacted, sort_keys=True)
+
+    original_chars = len(orig_json)
+    compacted_chars = len(comp_json)
+
+    if original_chars > 0 and original_chars > compacted_chars:
+        reduction_pct = round(
+            ((original_chars - compacted_chars) / original_chars) * 100.0, 2
+        )
+    else:
+        reduction_pct = 0.0
+
+    original_tokens = (original_chars + 3) // 4
+    compacted_tokens = (compacted_chars + 3) // 4
+    tokens_saved = max(0, original_tokens - compacted_tokens)
+
+    telemetry: Dict[str, Any] = {
+        "original_chars": original_chars,
+        "compacted_chars": compacted_chars,
+        "reduction_pct": reduction_pct,
+        "original_tokens": original_tokens,
+        "compacted_tokens": compacted_tokens,
+        "tokens_saved": tokens_saved,
+    }
+
+    return compacted, telemetry
+
+
+def optimize_mcp_config_tokens(
+    config: Union[Dict[str, Any], Path, str, None],
+    token_budget: int = 4000,
+    max_token_budget: Optional[int] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Automated MCP Config Optimizer & Schema Compaction Pipeline.
+
+    Pairs analyze_mcp_token_budget with compact_mcp_schema_descriptions
+    to auto-shrink over-budget MCP server manifests while preserving 100% of
+    functional JSON Schema types, properties, and constraints.
+
+    Returns:
+        Tuple of (optimized_config, summary_dict).
+    """
+    effective_budget = max_token_budget if max_token_budget is not None else token_budget
+
+    parsed: Any = None
+    if config is None:
+        return {}, {
+            "token_budget": effective_budget,
+            "original_tokens": 0,
+            "optimized_tokens": 0,
+            "tokens_saved": 0,
+            "reduction_pct": 0.0,
+            "servers_count": 0,
+            "recommendations": ["No configuration provided."],
+        }
+    elif isinstance(config, Path):
+        if not config.is_file():
+            return {}, {
+                "token_budget": effective_budget,
+                "original_tokens": 0,
+                "optimized_tokens": 0,
+                "tokens_saved": 0,
+                "reduction_pct": 0.0,
+                "servers_count": 0,
+                "recommendations": [f"Configuration file not found: {config}"],
+            }
+        try:
+            parsed = parse_jsonc(config.read_text(encoding="utf-8"))
+        except Exception:
+            return {}, {
+                "token_budget": effective_budget,
+                "original_tokens": 0,
+                "optimized_tokens": 0,
+                "tokens_saved": 0,
+                "reduction_pct": 0.0,
+                "servers_count": 0,
+                "recommendations": ["Malformed JSON in configuration file."],
+            }
+    elif isinstance(config, str):
+        stripped = config.strip()
+        if not stripped:
+            return {}, {
+                "token_budget": effective_budget,
+                "original_tokens": 0,
+                "optimized_tokens": 0,
+                "tokens_saved": 0,
+                "reduction_pct": 0.0,
+                "servers_count": 0,
+                "recommendations": ["Empty configuration provided."],
+            }
+        is_file = False
+        try:
+            p = Path(stripped)
+            if p.is_file():
+                is_file = True
+                parsed = parse_jsonc(p.read_text(encoding="utf-8"))
+        except Exception:
+            is_file = False
+
+        if not is_file:
+            try:
+                parsed = parse_jsonc(stripped)
+            except Exception:
+                return {}, {
+                    "token_budget": effective_budget,
+                    "original_tokens": 0,
+                    "optimized_tokens": 0,
+                    "tokens_saved": 0,
+                    "reduction_pct": 0.0,
+                    "servers_count": 0,
+                    "recommendations": ["Malformed JSON string provided."],
+                }
+    elif isinstance(config, dict):
+        parsed = copy.deepcopy(config)
+    else:
+        return {}, {
+            "token_budget": effective_budget,
+            "original_tokens": 0,
+            "optimized_tokens": 0,
+            "tokens_saved": 0,
+            "reduction_pct": 0.0,
+            "servers_count": 0,
+            "recommendations": [f"Invalid configuration type: {type(config).__name__}"],
+        }
+
+    if not isinstance(parsed, dict) or not parsed:
+        return {} if not isinstance(parsed, dict) else parsed, {
+            "token_budget": effective_budget,
+            "original_tokens": 0,
+            "optimized_tokens": 0,
+            "tokens_saved": 0,
+            "reduction_pct": 0.0,
+            "servers_count": 0,
+            "recommendations": ["Empty configuration."],
+        }
+
+    # Analyze original budget
+    analysis_before = analyze_mcp_token_budget(parsed, max_token_budget=effective_budget)
+    orig_tokens = analysis_before.get("total_estimated_tokens", 0)
+
+    # Compact schema descriptions across all servers/tools
+    compacted_cfg, telemetry = compact_mcp_schema_descriptions(parsed)
+
+    # Analyze optimized budget
+    analysis_after = analyze_mcp_token_budget(compacted_cfg, max_token_budget=effective_budget)
+    opt_tokens = analysis_after.get("total_estimated_tokens", 0)
+    tokens_saved = max(0, orig_tokens - opt_tokens)
+
+    if orig_tokens > 0 and orig_tokens > opt_tokens:
+        reduction_pct = round(((orig_tokens - opt_tokens) / orig_tokens) * 100.0, 2)
+    else:
+        reduction_pct = 0.0
+
+    srv_count = len(compacted_cfg.get("mcpServers", compacted_cfg)) if isinstance(compacted_cfg, dict) else 0
+
+    summary = {
+        "token_budget": effective_budget,
+        "original_tokens": orig_tokens,
+        "optimized_tokens": opt_tokens,
+        "tokens_saved": tokens_saved,
+        "reduction_pct": reduction_pct,
+        "servers_count": srv_count,
+        "recommendations": analysis_after.get("recommendations", []),
+        "within_budget": analysis_after.get("within_budget", True),
+    }
+
+    return compacted_cfg, summary
+
