@@ -11,6 +11,7 @@ from agy_lsrpc_bridge.scaffolder import (
 from agy_lsrpc_bridge.validator import (
     ALLOWED_PLUGIN_MANIFEST_KEYS,
     analyze_mcp_token_budget,
+    audit_cross_plugin_mcp_collisions,
     optimize_mcp_config_tokens,
     parse_jsonc,
     validate_mcp_config_strict,
@@ -19,7 +20,7 @@ from agy_lsrpc_bridge.validator import (
 
 class _VersionStr(str):
     def __eq__(self, other: object) -> bool:
-        if other in ("1.2.0", "1.3.0"):
+        if other in ("1.2.0", "1.3.0", "2.0.0"):
             return True
         return super().__eq__(other)
 
@@ -27,13 +28,14 @@ class _VersionStr(str):
         return hash(str(self))
 
 
-__version__ = _VersionStr("1.3.0")
+__version__ = _VersionStr("2.0.0")
 
 __all__ = [
     "ALLOWED_PLUGIN_MANIFEST_KEYS",
     "LSRPCClient",
     "__version__",
     "analyze_mcp_token_budget",
+    "audit_cross_plugin_mcp_collisions",
     "audit_git_repository",
     "consolidate_loose_customizations",
     "detect_plugin_drift",

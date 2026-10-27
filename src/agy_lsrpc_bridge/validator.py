@@ -870,3 +870,192 @@ def optimize_mcp_config_tokens(
 
     return compacted_cfg, summary
 
+
+def audit_cross_plugin_mcp_collisions(
+    plugins_dir: Path | str | None = None,
+    plugin_configs: dict[str, Any] | None = None,
+    fleet_token_budget: int = 16000,
+    per_plugin_token_budget: int = 4000,
+) -> dict[str, Any]:
+    """Audit cross-plugin MCP tool collisions and fleet schema token budgets (REQ-LB-201).
+
+    Checks for:
+    1. Direct tool name collisions across distinct plugins.
+    2. Composite 'mcp_<server>_<tool>' name collisions across distinct plugins.
+    3. Tool names or composite identifiers exceeding 64 characters.
+    4. Fleet-wide token footprint exceeding fleet_token_budget.
+    5. Individual plugin token footprints exceeding per_plugin_token_budget.
+    6. Directory discovery of plugins with mcp_config.json, strictly ignoring google-flow-video.
+    """
+    fleet_configs: dict[str, Any] = {}
+    if plugin_configs is not None:
+        fleet_configs.update(copy.deepcopy(plugin_configs))
+
+    if plugins_dir is not None:
+        p_dir = Path(plugins_dir).resolve()
+        if p_dir.is_dir():
+            for child in sorted(p_dir.iterdir()):
+                if not child.is_dir():
+                    continue
+                pname = child.name
+                if pname in ("google-flow-video", "flow_video_testbench"):
+                    continue
+                cfg_file = child / "mcp_config.json"
+                if not cfg_file.is_file():
+                    cfg_file = child / "plugin.json"
+                if cfg_file.is_file():
+                    try:
+                        raw = parse_jsonc(cfg_file.read_text(encoding="utf-8"))
+                        if isinstance(raw, dict):
+                            fleet_configs[pname] = raw
+                    except Exception:
+                        pass
+
+    # Strictly ignore google-flow-video
+    fleet_configs.pop("google-flow-video", None)
+    fleet_configs.pop("flow_video_testbench", None)
+
+    plugins_audited = sorted(fleet_configs.keys())
+    total_tools = 0
+    fleet_estimated_tokens = 0
+    over_budget_plugins: list[dict[str, Any]] = []
+    overlong_tools: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+
+    tools_by_name: dict[str, list[dict[str, str]]] = {}
+    tools_by_composite: dict[str, list[dict[str, str]]] = {}
+
+    for pname in plugins_audited:
+        p_cfg = fleet_configs[pname]
+        p_tokens = (len(json.dumps(p_cfg, indent=2, ensure_ascii=False)) + 3) // 4
+
+        fleet_estimated_tokens += p_tokens
+
+        if p_tokens > per_plugin_token_budget:
+            over_budget_plugins.append({
+                "plugin": pname,
+                "estimated_tokens": p_tokens,
+                "budget": per_plugin_token_budget,
+            })
+
+        servers_map = (
+            p_cfg.get("mcpServers")
+            if isinstance(p_cfg, dict) and "mcpServers" in p_cfg
+            else p_cfg
+        )
+        if isinstance(servers_map, dict):
+            for srv_name, srv_cfg in servers_map.items():
+                if not isinstance(srv_cfg, dict):
+                    continue
+                tools_field = srv_cfg.get("tools")
+                extracted_tools: list[dict[str, Any]] = []
+                if isinstance(tools_field, list):
+                    for t in tools_field:
+                        if isinstance(t, dict):
+                            extracted_tools.append(t)
+                        elif isinstance(t, str):
+                            extracted_tools.append({"name": t})
+                elif isinstance(tools_field, dict):
+                    for tname, tval in tools_field.items():
+                        if isinstance(tval, dict):
+                            item = dict(tval)
+                            item.setdefault("name", tname)
+                            extracted_tools.append(item)
+                        else:
+                            extracted_tools.append({"name": str(tname)})
+
+                for tool in extracted_tools:
+                    total_tools += 1
+                    t_name = str(tool.get("name") or "")
+                    comp_name = f"mcp_{srv_name}_{t_name}"
+
+                    if len(t_name) > 64 or len(comp_name) > 64:
+                        overlong_tools.append({
+                            "plugin": pname,
+                            "server": str(srv_name),
+                            "tool_name": t_name,
+                            "composite_name": comp_name,
+                            "length": max(len(t_name), len(comp_name)),
+                        })
+
+                    tools_by_name.setdefault(t_name, []).append({
+                        "plugin": pname,
+                        "server": str(srv_name),
+                        "composite": comp_name,
+                    })
+                    tools_by_composite.setdefault(comp_name, []).append({
+                        "plugin": pname,
+                        "server": str(srv_name),
+                        "tool_name": t_name,
+                    })
+
+    collisions: list[dict[str, Any]] = []
+    seen_colliding_tools: set[str] = set()
+
+    for t_name, occs in tools_by_name.items():
+        distinct_plugins = {occ["plugin"] for occ in occs}
+        if len(distinct_plugins) > 1:
+            collisions.append({
+                "tool_name": t_name,
+                "plugins": sorted(distinct_plugins),
+                "type": "tool_name_clash",
+                "occurrences": occs,
+            })
+            seen_colliding_tools.add(t_name)
+
+    for comp_name, occs in tools_by_composite.items():
+        distinct_plugins = {occ["plugin"] for occ in occs}
+        if len(distinct_plugins) > 1:
+            t_name = occs[0].get("tool_name") or comp_name.split("_")[-1]
+            if t_name not in seen_colliding_tools:
+                collisions.append({
+                    "tool_name": t_name,
+                    "composite_name": comp_name,
+                    "plugins": sorted(distinct_plugins),
+                    "type": "composite_name_clash",
+                    "occurrences": occs,
+                })
+                seen_colliding_tools.add(t_name)
+
+    has_collisions = len(collisions) > 0
+    within_fleet_budget = fleet_estimated_tokens <= fleet_token_budget
+
+    if has_collisions:
+        recommendations.append(
+            f"Detected {len(collisions)} cross-plugin MCP tool collisions. Rename colliding tools to avoid runtime ambiguity."
+        )
+    if not within_fleet_budget:
+        recommendations.append(
+            f"Fleet token footprint ({fleet_estimated_tokens}) exceeds fleet_token_budget ({fleet_token_budget}). "
+            "Use compact_mcp_schema_descriptions or optimize_mcp_config_tokens to compact schema descriptions."
+        )
+    if overlong_tools:
+        recommendations.append(
+            f"Detected {len(overlong_tools)} tools exceeding the 64-character limit. Shorten tool names or server prefixes."
+        )
+    if over_budget_plugins:
+        recommendations.append(
+            f"Detected {len(over_budget_plugins)} plugins exceeding per-plugin token budget ({per_plugin_token_budget})."
+        )
+
+    valid = bool(
+        not has_collisions
+        and within_fleet_budget
+        and len(overlong_tools) == 0
+        and len(over_budget_plugins) == 0
+    )
+
+    return {
+        "valid": valid,
+        "plugins_audited": plugins_audited,
+        "total_tools": total_tools,
+        "fleet_estimated_tokens": fleet_estimated_tokens,
+        "fleet_token_budget": fleet_token_budget,
+        "within_fleet_budget": within_fleet_budget,
+        "collisions": collisions,
+        "has_collisions": has_collisions,
+        "over_budget_plugins": over_budget_plugins,
+        "overlong_tools": overlong_tools,
+        "recommendations": recommendations,
+    }
+
