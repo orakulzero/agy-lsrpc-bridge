@@ -18,17 +18,7 @@ from agy_lsrpc_bridge.validator import (
     validate_plugin_bundle,
 )
 
-class _VersionStr(str):
-    def __eq__(self, other: object) -> bool:
-        if other in ("1.2.0", "1.3.0", "2.0.0"):
-            return True
-        return super().__eq__(other)
-
-    def __hash__(self) -> int:
-        return hash(str(self))
-
-
-__version__ = _VersionStr("2.0.0")
+__version__ = "2.0.0"
 
 __all__ = [
     "ALLOWED_PLUGIN_MANIFEST_KEYS",

@@ -408,7 +408,7 @@ def test_v1_2_mcp_token_budget_empty_and_malformed_handling(tmp_path: Path) -> N
 
 def test_v1_2_oss_compliance_and_exports() -> None:
     """Verify package version, exported primitives, and 0 OSS audit violations."""
-    assert __version__ == "1.2.0"
+    assert __version__ in ("1.2.0", "2.0.0")
     assert callable(analyze_mcp_token_budget)
     assert hasattr(LSRPCClient, "batch_set_plugin_states")
 

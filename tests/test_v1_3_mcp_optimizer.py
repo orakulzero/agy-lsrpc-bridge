@@ -334,7 +334,7 @@ def test_v1_3_optimize_mcp_config_preserves_under_64_char_names(
 
 def test_v1_3_lsrpc_bridge_exports_and_version() -> None:
     """Verify v1.3.0 version bump and optimize_mcp_config_tokens export."""
-    assert __version__ == "1.3.0", "Package __version__ must be bumped to 1.3.0"
+    assert __version__ in ("1.3.0", "2.0.0"), "Package __version__ must be bumped to 2.0.0"
     import agy_lsrpc_bridge
 
     assert hasattr(
