@@ -29,6 +29,39 @@ from agy_lsrpc_bridge.scaffolder import (
 from agy_lsrpc_bridge.validator import validate_plugin_bundle
 
 
+def validate_subcommand_args(args_dict: dict[str, Any]) -> dict[str, Any]:
+    """
+    Pre-flight validator for CLI argument combinations.
+    """
+    errors = []
+    
+    if "subcommand" not in args_dict:
+        return {"valid": False, "errors": ["Missing 'subcommand' key in arguments"]}
+        
+    cmd = args_dict["subcommand"]
+    
+    required_args = {
+        "status": [],
+        "list": [],
+        "enable": ["target"],
+        "disable": ["target"],
+        "uninstall": ["target"],
+        "install": ["marketplace_id"],
+        "validate": ["plugin_dir"],
+        "scaffold": ["target_root", "name", "description"],
+        "consolidate": ["plugin_dir"],
+    }
+    
+    if cmd not in required_args:
+        return {"valid": False, "errors": [f"Unknown subcommand: {cmd}"]}
+        
+    for req in required_args[cmd]:
+        if req not in args_dict:
+            errors.append(f"Missing required argument '{req}' for subcommand '{cmd}'")
+            
+    return {"valid": len(errors) == 0, "errors": errors}
+
+
 def _emit(payload: Any, as_json: bool = True) -> None:
     if as_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
