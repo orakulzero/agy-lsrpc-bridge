@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from agy_lsrpc_bridge.client import LSRPCClient, detect_plugin_drift
+from agy_lsrpc_bridge.marketplace_v228 import (
+    ALLOWED_PLUGIN_JSON_KEYS,
+    MarketplaceManifestAudit,
+    MarketplaceV228Validator,
+)
 from agy_lsrpc_bridge.oss_audit import audit_git_repository
 from agy_lsrpc_bridge.scaffolder import (
     consolidate_loose_customizations,
@@ -21,8 +26,11 @@ from agy_lsrpc_bridge.validator import (
 __version__ = "2.0.0"
 
 __all__ = [
+    "ALLOWED_PLUGIN_JSON_KEYS",
     "ALLOWED_PLUGIN_MANIFEST_KEYS",
     "LSRPCClient",
+    "MarketplaceManifestAudit",
+    "MarketplaceV228Validator",
     "__version__",
     "analyze_mcp_token_budget",
     "audit_cross_plugin_mcp_collisions",
