@@ -29,6 +29,24 @@ from agy_lsrpc_bridge.scaffolder import (
 from agy_lsrpc_bridge.validator import validate_plugin_bundle
 
 
+def is_valid_subcommand(subcommand: str | None) -> bool:
+    """Helper function to check if a subcommand is valid."""
+    if subcommand is None:
+        return False
+    valid_subcommands = {
+        "status",
+        "list",
+        "enable",
+        "disable",
+        "uninstall",
+        "install",
+        "validate",
+        "scaffold",
+        "consolidate",
+    }
+    return subcommand in valid_subcommands
+
+
 def validate_subcommand_args(args_dict: dict[str, Any]) -> dict[str, Any]:
     """
     Pre-flight validator for CLI argument combinations.
