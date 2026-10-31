@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
-from typing import Any, List, Optional
+from pathlib import Path
+from typing import Any
 
 from agy_lsrpc_bridge.client import LSRPCClient
 from agy_lsrpc_bridge.scaffolder import (
@@ -110,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     cmd = args.subcommand
