@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from agy_lsrpc_bridge.ast_shm_ringbuffer import (
+    ASTNodeDelta,
+    SharedMemoryASTRingBuffer,
+    compute_ast_delta,
+)
 from agy_lsrpc_bridge.client import LSRPCClient, detect_plugin_drift
 from agy_lsrpc_bridge.marketplace_v228 import (
     ALLOWED_PLUGIN_JSON_KEYS,
@@ -28,13 +33,16 @@ __version__ = "2.0.0"
 __all__ = [
     "ALLOWED_PLUGIN_JSON_KEYS",
     "ALLOWED_PLUGIN_MANIFEST_KEYS",
+    "ASTNodeDelta",
     "LSRPCClient",
     "MarketplaceManifestAudit",
     "MarketplaceV228Validator",
+    "SharedMemoryASTRingBuffer",
     "__version__",
     "analyze_mcp_token_budget",
     "audit_cross_plugin_mcp_collisions",
     "audit_git_repository",
+    "compute_ast_delta",
     "consolidate_loose_customizations",
     "detect_plugin_drift",
     "optimize_mcp_config_tokens",
