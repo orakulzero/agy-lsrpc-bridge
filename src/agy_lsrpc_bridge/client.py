@@ -17,14 +17,16 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any
+from collections.abc import Callable, Sequence
 import urllib.error
 import urllib.request
 
 from agy_lsrpc_bridge.validator import parse_jsonc
+import contextlib
 
 TransportCallable = Callable[
-    [str, str, Dict[str, str], Optional[Dict[str, Any]]], Any
+    [str, str, dict[str, str], dict[str, Any] | None], Any
 ]
 
 SERVICE_PREFIX = "exa.language_server_pb.LanguageServerService"
@@ -56,10 +58,10 @@ class LSRPCClient:
 
     def __init__(
         self,
-        address: Optional[str] = None,
-        csrf_token: Optional[str] = None,
-        config_root: Optional[Path] = None,
-        transport: Optional[TransportCallable] = None,
+        address: str | None = None,
+        csrf_token: str | None = None,
+        config_root: Path | None = None,
+        transport: TransportCallable | None = None,
         timeout_sec: float = 4.0,
     ) -> None:
         raw_addr = (
@@ -85,10 +87,10 @@ class LSRPCClient:
         self,
         method: str,
         url: str,
-        headers: Dict[str, str],
-        json_body: Optional[Dict[str, Any]],
+        headers: dict[str, str],
+        json_body: dict[str, Any] | None,
     ) -> Any:
-        data: Optional[bytes] = None
+        data: bytes | None = None
         if json_body is not None:
             data = json.dumps(json_body).encode("utf-8")
         req = urllib.request.Request(url=url, data=data, headers=headers, method=method)
@@ -107,13 +109,13 @@ class LSRPCClient:
         except urllib.error.URLError as exc:
             raise ConnectionError(f"Language Server unreachable at {url}: {exc}") from exc
 
-    def _build_headers(self) -> Dict[str, str]:
+    def _build_headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.csrf_token:
             headers["x-codeium-csrf-token"] = self.csrf_token
         return headers
 
-    def healthz(self) -> Dict[str, Any]:
+    def healthz(self) -> dict[str, Any]:
         """Check Language Server `/healthz` endpoint."""
         url = f"http://{self.address}/healthz"
         try:
@@ -135,15 +137,15 @@ class LSRPCClient:
     def call_rpc(
         self,
         method_name: str,
-        payload: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Invoke a ConnectRPC method on `exa.language_server_pb.LanguageServerService`."""
         url = f"http://{self.address}/{SERVICE_PREFIX}/{method_name}"
         body = payload if payload is not None else {}
         res = self.transport("POST", url, self._build_headers(), body)
         return res if isinstance(res, dict) else {"result": res}
 
-    def _compact_rpc_plugin_entry(self, raw_plugin: Dict[str, Any]) -> Dict[str, Any]:
+    def _compact_rpc_plugin_entry(self, raw_plugin: dict[str, Any]) -> dict[str, Any]:
         raw_path = str(raw_plugin.get("path") or "")
         dir_name = _extract_last_segment(raw_path) or str(raw_plugin.get("name") or "unknown")
         name = str(raw_plugin.get("name") or dir_name)
@@ -152,7 +154,7 @@ class LSRPCClient:
         is_builtin = _is_builtin_path(raw_path)
 
         raw_skills = raw_plugin.get("skills") or []
-        skills: List[str] = []
+        skills: list[str] = []
         for s in raw_skills:
             if isinstance(s, dict) and s.get("name"):
                 skills.append(str(s["name"]))
@@ -160,7 +162,7 @@ class LSRPCClient:
                 skills.append(s)
 
         raw_agents = raw_plugin.get("agents") or []
-        agents: List[str] = []
+        agents: list[str] = []
         for a in raw_agents:
             if isinstance(a, dict) and a.get("name"):
                 agents.append(str(a["name"]))
@@ -168,7 +170,7 @@ class LSRPCClient:
                 agents.append(a)
 
         raw_rules = raw_plugin.get("rules") or []
-        rules: List[str] = []
+        rules: list[str] = []
         for r in raw_rules:
             if isinstance(r, dict):
                 rpath = r.get("absolutePath") or r.get("path")
@@ -181,7 +183,7 @@ class LSRPCClient:
         has_hooks = bool(hooks_json and str(hooks_json).strip())
 
         raw_mcp = raw_plugin.get("mcpServers")
-        mcp_names: List[str] = []
+        mcp_names: list[str] = []
         if isinstance(raw_mcp, list):
             for m in raw_mcp:
                 if isinstance(m, dict) and m.get("name"):
@@ -189,7 +191,7 @@ class LSRPCClient:
                 elif isinstance(m, str):
                     mcp_names.append(m)
         elif isinstance(raw_mcp, dict):
-            mcp_names.extend(str(k) for k in raw_mcp.keys())
+            mcp_names.extend(str(k) for k in raw_mcp)
 
         return {
             "name": name,
@@ -206,7 +208,7 @@ class LSRPCClient:
             "customizationLink": f"[{name}](customization://{dir_name})",
         }
 
-    def _read_local_config_json(self) -> Dict[str, Any]:
+    def _read_local_config_json(self) -> dict[str, Any]:
         cfg_file = self.config_root / "config.json"
         if not cfg_file.is_file():
             return {}
@@ -216,7 +218,7 @@ class LSRPCClient:
         except Exception:
             return {}
 
-    def _write_local_config_json_atomic(self, data: Dict[str, Any]) -> None:
+    def _write_local_config_json_atomic(self, data: dict[str, Any]) -> None:
         self.config_root.mkdir(parents=True, exist_ok=True)
         cfg_file = self.config_root / "config.json"
         serialized = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
@@ -229,16 +231,14 @@ class LSRPCClient:
             os.replace(tmp_name, cfg_file)
         finally:
             if os.path.exists(tmp_name):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(tmp_name)
-                except OSError:
-                    pass
 
-    def _scan_filesystem_plugins(self) -> List[Dict[str, Any]]:
+    def _scan_filesystem_plugins(self) -> list[dict[str, Any]]:
         cfg = self._read_local_config_json()
         plugins_cfg = (cfg.get("plugins") or {}) if isinstance(cfg, dict) else {}
         plugins_root = self.config_root / "plugins"
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         if not plugins_root.is_dir():
             return items
 
@@ -265,20 +265,20 @@ class LSRPCClient:
             else:
                 disabled = bool(manifest.get("disabled", False))
 
-            skills: List[str] = []
+            skills: list[str] = []
             skills_root = pdir / "skills"
             if skills_root.is_dir():
                 for sdir in sorted(skills_root.iterdir(), key=lambda p: p.name):
                     if sdir.is_dir() and (sdir / "SKILL.md").is_file():
                         skills.append(sdir.name)
 
-            agents: List[str] = []
+            agents: list[str] = []
             agents_root = pdir / "agents"
             if agents_root.is_dir():
                 for afile in sorted(agents_root.glob("*.md"), key=lambda p: p.name):
                     agents.append(afile.stem)
 
-            rules: List[str] = []
+            rules: list[str] = []
             rules_root = pdir / "rules"
             if rules_root.is_dir():
                 for rfile in sorted(rules_root.glob("*.md"), key=lambda p: p.name):
@@ -286,14 +286,14 @@ class LSRPCClient:
 
             has_hooks = (pdir / "hooks.json").is_file()
 
-            mcp_names: List[str] = []
+            mcp_names: list[str] = []
             mcp_file = pdir / "mcp_config.json"
             if mcp_file.is_file():
                 try:
                     mcp_data = parse_jsonc(mcp_file.read_text(encoding="utf-8"))
                     srv_map = (mcp_data or {}).get("mcpServers") or {}
                     if isinstance(srv_map, dict):
-                        mcp_names.extend(str(k) for k in srv_map.keys())
+                        mcp_names.extend(str(k) for k in srv_map)
                 except Exception:
                     pass
 
@@ -316,13 +316,13 @@ class LSRPCClient:
         return items
 
     def list_plugins(
-        self, workspace_uris: Optional[List[str]] = None
-    ) -> List[Dict[str, Any]]:
+        self, workspace_uris: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """
         Return context-flood-safe inventory of installed plugins via `GetAllPlugins` RPC,
         falling back to local filesystem discovery if the Language Server is offline.
         """
-        payload: Dict[str, Any] = {}
+        payload: dict[str, Any] = {}
         if workspace_uris is not None:
             payload["workspaceUris"] = list(workspace_uris)
         try:
@@ -339,8 +339,8 @@ class LSRPCClient:
         return self._scan_filesystem_plugins()
 
     def resolve_plugin_dir(
-        self, target: str, workspace_uris: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+        self, target: str, workspace_uris: list[str] | None = None
+    ) -> dict[str, Any]:
         """
         Resolve a plugin target string to its inventory record.
         Matches exact `dir` first, then exact `name`, then case-insensitive `name`.
@@ -384,8 +384,8 @@ class LSRPCClient:
         self,
         target: str,
         enabled: bool,
-        workspace_uris: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        workspace_uris: list[str] | None = None,
+    ) -> dict[str, Any]:
         """
         Enable or disable a plugin live via `JetboxWriteState` keyed by its true `dir`,
         and synchronize `config.json` atomically while preserving all sibling settings.
@@ -431,12 +431,12 @@ class LSRPCClient:
             "customizationLink": f"[{plugin_name}](customization://{dir_name})",
         }
 
-    def _rollback_batch(self, applied_records: List[Dict[str, Any]]) -> None:
+    def _rollback_batch(self, applied_records: list[dict[str, Any]]) -> None:
         """Roll back applied mutations in reverse order, restoring previous states."""
         for rec in reversed(applied_records):
             dir_name = rec["dir"]
             prev_state = rec["previous_enabled"]
-            try:
+            with contextlib.suppress(Exception):
                 self.call_rpc(
                     "JetboxWriteState",
                     {
@@ -445,8 +445,6 @@ class LSRPCClient:
                         }
                     },
                 )
-            except Exception:
-                pass
 
             try:
                 cfg = self._read_local_config_json()
@@ -459,10 +457,10 @@ class LSRPCClient:
 
     def batch_set_plugin_states(
         self,
-        states: Union[Sequence[Tuple[str, bool]], Dict[str, bool]],
+        states: Sequence[tuple[str, bool]] | dict[str, bool],
         rollback_on_error: bool = True,
-        workspace_uris: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        workspace_uris: list[str] | None = None,
+    ) -> dict[str, Any]:
         """
         Transactional batch plugin state manager.
         Applies a series of plugin enable/disable mutations keyed strictly on install directory (`dir`).
@@ -487,18 +485,18 @@ class LSRPCClient:
 
         # Retrieve inventory to resolve install directory and record initial states
         inventory = self.list_plugins(workspace_uris=workspace_uris)
-        dir_map: Dict[str, Dict[str, Any]] = {p["dir"]: p for p in inventory}
-        name_map: Dict[str, Dict[str, Any]] = {
+        dir_map: dict[str, dict[str, Any]] = {p["dir"]: p for p in inventory}
+        name_map: dict[str, dict[str, Any]] = {
             p["name"]: p for p in inventory if p.get("name") and p["name"] != p["dir"]
         }
 
         # Keep track of initial states for all plugins present in inventory
-        initial_states: Dict[str, bool] = {
+        initial_states: dict[str, bool] = {
             p["dir"]: (not bool(p.get("disabled", False))) for p in inventory
         }
 
-        applied_records: List[Dict[str, Any]] = []
-        errors: List[str] = []
+        applied_records: list[dict[str, Any]] = []
+        errors: list[str] = []
 
         for item in items:
             if not isinstance(item, (tuple, list)) or len(item) != 2:
@@ -628,8 +626,8 @@ class LSRPCClient:
         }
 
     def uninstall_plugin(
-        self, target: str, workspace_uris: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+        self, target: str, workspace_uris: list[str] | None = None
+    ) -> dict[str, Any]:
         """
         Safely uninstall a plugin via `DeletePlugin` with two mandatory guards:
         - Guard 1: Built-in plugins (`/builtin/plugins/`) cannot be uninstalled (PermissionError).
@@ -647,13 +645,11 @@ class LSRPCClient:
 
         reenabled_before_delete = False
         if record.get("disabled"):
-            try:
+            with contextlib.suppress(Exception):
                 self.call_rpc(
                     "JetboxWriteState",
                     {"userConfig": {"plugins": {dir_name: {"enabled": True}}}},
                 )
-            except Exception:
-                pass
             cfg = self._read_local_config_json()
             if isinstance(cfg.get("plugins"), dict) and dir_name in cfg["plugins"]:
                 cfg["plugins"][dir_name] = {"enabled": True}
@@ -671,7 +667,7 @@ class LSRPCClient:
             "restart_required": False,
         }
 
-    def install_marketplace_plugin(self, marketplace_id: str) -> Dict[str, Any]:
+    def install_marketplace_plugin(self, marketplace_id: str) -> dict[str, Any]:
         """Install a plugin from the Antigravity Agent Marketplace via `InstallCustomization`."""
         clean_id = (marketplace_id or "").strip()
         if not clean_id:
@@ -695,8 +691,8 @@ class LSRPCClient:
     def detect_plugin_drift(
         self,
         source_roots: Sequence[Path | str],
-        plugins_dir: Optional[Path | str] = None,
-    ) -> Dict[str, Any]:
+        plugins_dir: Path | str | None = None,
+    ) -> dict[str, Any]:
         """Detect drift between source roots and installed plugins using client configuration."""
         target_plugins_dir = plugins_dir or (self.config_root / "plugins")
         return detect_plugin_drift(source_roots, plugins_dir=target_plugins_dir)
@@ -704,8 +700,8 @@ class LSRPCClient:
 
 def detect_plugin_drift(
     source_roots: Sequence[Path | str],
-    plugins_dir: Optional[Path | str] = None,
-) -> Dict[str, Any]:
+    plugins_dir: Path | str | None = None,
+) -> dict[str, Any]:
     """Detect manifest and version drift between source repositories and installed plugins."""
     p_dir = Path(plugins_dir).resolve() if plugins_dir else (_default_config_root() / "plugins").resolve()
 
@@ -715,18 +711,18 @@ def detect_plugin_drift(
     except Exception:
         pass
 
-    drifted_plugins: List[Dict[str, Any]] = []
-    missing_in_plugins: List[str] = []
-    found_names: Set[str] = set()
+    drifted_plugins: list[dict[str, Any]] = []
+    missing_in_plugins: list[str] = []
+    found_names: set[str] = set()
 
     for s_root in source_roots:
         root = Path(s_root).resolve()
         if not root.is_dir():
             continue
 
-        manifest_path: Optional[Path] = None
+        manifest_path: Path | None = None
         plugin_name: str = root.name
-        source_manifest: Dict[str, Any] = {}
+        source_manifest: dict[str, Any] = {}
 
         if (root / "plugin.json").is_file():
             manifest_path = root / "plugin.json"
@@ -770,7 +766,7 @@ def detect_plugin_drift(
         except Exception:
             installed_manifest = {}
 
-        field_diffs: List[str] = []
+        field_diffs: list[str] = []
         source_ver = str(source_manifest.get("version") or "")
         inst_ver = str(installed_manifest.get("version") or "")
         if source_ver and inst_ver and source_ver != inst_ver:
@@ -791,7 +787,7 @@ def detect_plugin_drift(
                 "installed_path": str(installed_manifest_path),
             })
 
-    untracked_in_source: List[str] = []
+    untracked_in_source: list[str] = []
     if p_dir.is_dir():
         for item in sorted(p_dir.iterdir()):
             if item.is_dir() and item.name not in found_names:
