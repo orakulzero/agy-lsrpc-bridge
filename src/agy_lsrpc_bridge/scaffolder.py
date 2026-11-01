@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 import re
 import shutil
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 def _strip_yaml_frontmatter(markdown_text: str) -> str:
@@ -40,7 +40,7 @@ def scaffold_plugin(
     target_root: Path,
     name: str,
     description: str,
-    display_name: Optional[str] = None,
+    display_name: str | None = None,
     include_hooks: bool = False,
     include_mcp: bool = False,
     version: str = "1.0.0",
@@ -70,7 +70,7 @@ def scaffold_plugin(
     )
 
     # 2. plugin.json (strictly allowed top-level fields only)
-    manifest: Dict[str, Any] = {
+    manifest: dict[str, Any] = {
         "name": clean_name,
         "displayName": clean_display,
         "description": clean_desc,
@@ -182,9 +182,9 @@ You are the specialized autonomous agent for `{clean_name}`. Follow `skills/{cle
 
 def consolidate_loose_customizations(
     plugin_dir: Path,
-    skill_dirs: Optional[List[Path]] = None,
-    rule_files: Optional[List[Path]] = None,
-) -> Dict[str, Any]:
+    skill_dirs: list[Path] | None = None,
+    rule_files: list[Path] | None = None,
+) -> dict[str, Any]:
     """
     Consolidate standalone skill directories and rule files into an existing plugin bundle.
     Strips any YAML frontmatter from rule files when merging into `rules/AGENTS.md`.
@@ -193,7 +193,7 @@ def consolidate_loose_customizations(
     if not (pdir / "plugin.json").is_file():
         raise FileNotFoundError(f"Target plugin directory missing plugin.json: {pdir}")
 
-    consolidated_skills: List[str] = []
+    consolidated_skills: list[str] = []
     for sdir in skill_dirs or []:
         src_skill = Path(sdir).resolve()
         if not src_skill.is_dir() or not (src_skill / "SKILL.md").is_file():
@@ -204,7 +204,7 @@ def consolidate_loose_customizations(
         shutil.copytree(src_skill, dest_skill)
         consolidated_skills.append(src_skill.name)
 
-    consolidated_rules: List[str] = []
+    consolidated_rules: list[str] = []
     if rule_files:
         rules_dir = pdir / "rules"
         rules_dir.mkdir(parents=True, exist_ok=True)
@@ -215,7 +215,7 @@ def consolidate_loose_customizations(
                 agents_md_path.read_text(encoding="utf-8")
             ).rstrip()
 
-        merged_blocks: List[str] = [existing_text] if existing_text else []
+        merged_blocks: list[str] = [existing_text] if existing_text else []
         for rfile in rule_files:
             rpath = Path(rfile).resolve()
             if not rpath.is_file():
