@@ -14,6 +14,7 @@ import json
 from multiprocessing import shared_memory
 import struct
 from typing import Any
+import contextlib
 
 
 @dataclass(frozen=True)
@@ -181,12 +182,8 @@ class SharedMemoryASTRingBuffer:
             return
         self._closed = True
         if self._shm is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._shm.close()
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 self._shm.unlink()
-            except Exception:
-                pass
             self._shm = None
