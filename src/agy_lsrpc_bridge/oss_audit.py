@@ -53,9 +53,11 @@ def audit_git_repository(repo_path: Path | str) -> dict[str, Any]:
     ]
 
     # Gate 1: Required OSS files, Project Manifest & MIT License
-    for req_file in ("LICENSE", "README.md", ".gitignore"):
-        if not (repo / req_file).is_file():
-            violations.append(f"Missing required OSS file: {req_file}")
+    violations.extend(
+        f"Missing required OSS file: {req_file}"
+        for req_file in ("LICENSE", "README.md", ".gitignore")
+        if not (repo / req_file).is_file()
+    )
 
     manifest_candidates = (
         "pyproject.toml",
@@ -113,9 +115,11 @@ def audit_git_repository(repo_path: Path | str) -> dict[str, Any]:
 
     emails_out = _git_out(repo, "log", "--all", "--format=%ae")
     emails = [e.strip() for e in emails_out.splitlines() if e.strip()]
-    for email in emails:
-        if email != EXPECTED_OSS_EMAIL:
-            violations.append(f"Unexpected commit author email: {email}")
+    violations.extend(
+        f"Unexpected commit author email: {email}"
+        for email in emails
+        if email != EXPECTED_OSS_EMAIL
+    )
 
     return {
         "passed": len(violations) == 0,
