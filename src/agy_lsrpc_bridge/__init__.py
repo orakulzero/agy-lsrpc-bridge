@@ -14,6 +14,11 @@ from agy_lsrpc_bridge.marketplace_v228 import (
     MarketplaceV228Validator,
 )
 from agy_lsrpc_bridge.oss_audit import audit_git_repository
+from agy_lsrpc_bridge.rpc_deadlock_breaker import (
+    BreakerTelemetry,
+    RPCDeadlockBreaker,
+    RPCWaitResolution,
+)
 from agy_lsrpc_bridge.scaffolder import (
     consolidate_loose_customizations,
     scaffold_plugin,
@@ -34,9 +39,12 @@ __all__ = [
     "ALLOWED_PLUGIN_JSON_KEYS",
     "ALLOWED_PLUGIN_MANIFEST_KEYS",
     "ASTNodeDelta",
+    "BreakerTelemetry",
     "LSRPCClient",
     "MarketplaceManifestAudit",
     "MarketplaceV228Validator",
+    "RPCDeadlockBreaker",
+    "RPCWaitResolution",
     "SharedMemoryASTRingBuffer",
     "__version__",
     "analyze_mcp_token_budget",
