@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 
 @dataclass
@@ -21,8 +21,8 @@ class RPCWaitResolution:
     callee_repo: str
     deadlock_detected: bool
     resolution: str
-    cycle_path: List[str] = field(default_factory=list)
-    continuation_id: Optional[str] = None
+    cycle_path: list[str] = field(default_factory=list)
+    continuation_id: str | None = None
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
@@ -30,7 +30,7 @@ class RPCWaitResolution:
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -49,7 +49,7 @@ class BreakerTelemetry:
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -57,26 +57,26 @@ class RPCDeadlockBreaker:
     """Tarjan SCC and BFS shortest-cycle RPC deadlock circuit breaker (REQ-LSRPC-DEADLOCK-01)."""
 
     def __init__(self) -> None:
-        self._edges_by_call: Dict[str, Tuple[str, str]] = {}
-        self._raw_edges: List[Tuple[str, str]] = []
+        self._edges_by_call: dict[str, tuple[str, str]] = {}
+        self._raw_edges: list[tuple[str, str]] = []
         self._tripped_count: int = 0
-        self._continuations: Dict[str, Dict[str, Any]] = {}
+        self._continuations: dict[str, dict[str, Any]] = {}
         self._seq: int = 0
 
-    def _adjacency(self) -> Dict[str, List[str]]:
-        adj: Dict[str, List[str]] = {}
+    def _adjacency(self) -> dict[str, list[str]]:
+        adj: dict[str, list[str]] = {}
         for src, dst in list(self._edges_by_call.values()) + self._raw_edges:
             adj.setdefault(src, []).append(dst)
             adj.setdefault(dst, [])
         return adj
 
-    def _find_path(self, start: str, target: str) -> Optional[List[str]]:
+    def _find_path(self, start: str, target: str) -> list[str] | None:
         if start == target:
             return [start]
         adj = self._adjacency()
         if start not in adj:
             return None
-        queue: deque[List[str]] = deque([[start]])
+        queue: deque[list[str]] = deque([[start]])
         visited = {start}
         while queue:
             path = queue.popleft()
@@ -130,13 +130,13 @@ class RPCDeadlockBreaker:
         """Inject a raw directed wait edge for graph cycle inspection (REQ-LSRPC-DEADLOCK-01)."""
         self._raw_edges.append((source, target))
 
-    def detect_all_cycles(self) -> List[List[str]]:
+    def detect_all_cycles(self) -> list[list[str]]:
         """Detect directed cycles in the current wait-for graph (REQ-LSRPC-DEADLOCK-01)."""
         adj = self._adjacency()
-        cycles: List[List[str]] = []
+        cycles: list[list[str]] = []
         seen_signatures = set()
         for start_node in sorted(adj.keys()):
-            stack: List[Tuple[str, List[str]]] = [(start_node, [start_node])]
+            stack: list[tuple[str, list[str]]] = [(start_node, [start_node])]
             while stack:
                 curr, path = stack.pop()
                 for nxt in adj.get(curr, []):
@@ -149,7 +149,7 @@ class RPCDeadlockBreaker:
                         stack.append((nxt, path + [nxt]))
         return cycles
 
-    def resolve_continuation(self, continuation_id: str, result: Any = None) -> Dict[str, Any]:
+    def resolve_continuation(self, continuation_id: str, result: Any = None) -> dict[str, Any]:
         """Resolve an asynchronous continuation ticket (REQ-LSRPC-DEADLOCK-01)."""
         entry = self._continuations.setdefault(continuation_id, {"continuation_id": continuation_id})
         entry.update({"status": "COMPLETED", "completed": True, "ok": True, "result": result})
