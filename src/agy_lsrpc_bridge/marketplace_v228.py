@@ -43,7 +43,6 @@ class MarketplaceManifestAudit:
     prompt_count: int
     has_valid_logo: bool
 
-
 class MarketplaceV228Validator:
     """@requirement("REQ-LSRPC-MKT-01") Validator for Antigravity Marketplace v2.28.1 plugin bundles."""
 
