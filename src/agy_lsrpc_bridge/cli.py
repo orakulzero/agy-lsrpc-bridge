@@ -33,8 +33,8 @@ def _emit(payload: Any, as_json: bool = True) -> None:
     if as_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
-
+        # Fixed redundant JSON serialization for non-JSON output
+        print(str(payload))
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
