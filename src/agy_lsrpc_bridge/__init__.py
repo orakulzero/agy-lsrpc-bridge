@@ -19,6 +19,13 @@ from agy_lsrpc_bridge.rpc_deadlock_breaker import (
     RPCDeadlockBreaker,
     RPCWaitResolution,
 )
+from agy_lsrpc_bridge.runtime_v229 import (
+    RESTRICTED_V229_MUTATION_RPCS,
+    RuntimeV229Inspector,
+    format_customization_and_sidecar_links,
+    guard_restricted_lsrpc_mutation,
+    validate_v229_plugin_metadata,
+)
 from agy_lsrpc_bridge.scaffolder import (
     consolidate_loose_customizations,
     scaffold_plugin,
@@ -34,6 +41,7 @@ from agy_lsrpc_bridge.validator import (
 )
 
 __version__ = "2.0.0"
+__v3_generation__ = "3.0.0"
 
 __all__ = [
     "ALLOWED_PLUGIN_JSON_KEYS",
@@ -43,9 +51,12 @@ __all__ = [
     "LSRPCClient",
     "MarketplaceManifestAudit",
     "MarketplaceV228Validator",
+    "RESTRICTED_V229_MUTATION_RPCS",
     "RPCDeadlockBreaker",
     "RPCWaitResolution",
+    "RuntimeV229Inspector",
     "SharedMemoryASTRingBuffer",
+    "__v3_generation__",
     "__version__",
     "analyze_mcp_token_budget",
     "audit_cross_plugin_mcp_collisions",
@@ -53,9 +64,12 @@ __all__ = [
     "compute_ast_delta",
     "consolidate_loose_customizations",
     "detect_plugin_drift",
+    "format_customization_and_sidecar_links",
+    "guard_restricted_lsrpc_mutation",
     "optimize_mcp_config_tokens",
     "parse_jsonc",
     "scaffold_plugin",
     "validate_mcp_config_strict",
     "validate_plugin_bundle",
+    "validate_v229_plugin_metadata",
 ]
