@@ -22,8 +22,11 @@ from agy_lsrpc_bridge.rpc_deadlock_breaker import (
 from agy_lsrpc_bridge.runtime_v229 import (
     RESTRICTED_V229_MUTATION_RPCS,
     RuntimeV229Inspector,
+    format_agy_deeplink,
     format_customization_and_sidecar_links,
     guard_restricted_lsrpc_mutation,
+    validate_plugin_auth_config_v229,
+    validate_plugin_manifest_v229,
     validate_v229_plugin_metadata,
 )
 from agy_lsrpc_bridge.scaffolder import (
@@ -64,12 +67,15 @@ __all__ = [
     "compute_ast_delta",
     "consolidate_loose_customizations",
     "detect_plugin_drift",
+    "format_agy_deeplink",
     "format_customization_and_sidecar_links",
     "guard_restricted_lsrpc_mutation",
     "optimize_mcp_config_tokens",
     "parse_jsonc",
     "scaffold_plugin",
     "validate_mcp_config_strict",
+    "validate_plugin_auth_config_v229",
     "validate_plugin_bundle",
+    "validate_plugin_manifest_v229",
     "validate_v229_plugin_metadata",
 ]

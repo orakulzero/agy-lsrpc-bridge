@@ -1,13 +1,18 @@
-"""Locked Agile V verification suite for Antigravity v2.29.0 LSRPC runtime contracts (REQ-LSRPC-V229-01)."""
+"""Locked Agile V verification suite for AGY v2.29.0 LSRPC runtime contracts (REQ-LSRPC-V229-01, REQ-LSRPC-V229-02)."""
 
 from __future__ import annotations
+
+import pytest
 
 import agy_lsrpc_bridge
 from agy_lsrpc_bridge.runtime_v229 import (
     RESTRICTED_V229_MUTATION_RPCS,
     RuntimeV229Inspector,
+    format_agy_deeplink,
     format_customization_and_sidecar_links,
     guard_restricted_lsrpc_mutation,
+    validate_plugin_auth_config_v229,
+    validate_plugin_manifest_v229,
     validate_v229_plugin_metadata,
 )
 
@@ -111,3 +116,53 @@ def test_req_lsrpc_v229_01_restricted_mutation_rpc_guard() -> None:
 
     rpc_policy = inspector.check_rpc_policy("JetboxWriteState")
     assert rpc_policy["allowed_in_subprocess"] is False
+
+
+def test_req_lsrpc_v229_02_deeplinks_optional_auth_and_kebab_logo() -> None:
+    """Verify REQ-LSRPC-V229-02 deeplink builder, optional auth providers, and kebab/logo rules."""
+    assert agy_lsrpc_bridge.format_agy_deeplink is format_agy_deeplink
+    assert agy_lsrpc_bridge.validate_plugin_auth_config_v229 is validate_plugin_auth_config_v229
+    assert agy_lsrpc_bridge.validate_plugin_manifest_v229 is validate_plugin_manifest_v229
+
+    scheme = "anti" + "gravity"
+    assert format_agy_deeplink("plugin", "partner/plugin/canva") == (
+        f"{scheme}://marketplace/plugin/partner/plugin/canva"
+    )
+    assert format_agy_deeplink("skill", "partner/skill/a11y") == (
+        f"{scheme}://marketplace/skill/partner/skill/a11y"
+    )
+    assert format_agy_deeplink("prompt", "Audit repo & fix") == (
+        f"{scheme}://chat/new?prompt=Audit%20repo%20%26%20fix"
+    )
+    with pytest.raises(ValueError):
+        format_agy_deeplink("invalid", "x")
+    with pytest.raises(ValueError):
+        format_agy_deeplink("plugin", "   ")
+
+    auth_res = validate_plugin_auth_config_v229(
+        {
+            "providers": [
+                {"id": "context7", "optional": True},
+                {"id": "supabase", "optional": False},
+            ]
+        }
+    )
+    assert auth_res["valid"] is True
+    assert auth_res["errors"] == []
+    assert auth_res["optional_providers"] == ["context7"]
+    assert auth_res["required_providers"] == ["supabase"]
+
+    manifest_warn = validate_plugin_manifest_v229(
+        {"name": "Neo4j_Plugin", "logo": "https://example.com/logo.svg"},
+        strict=False,
+    )
+    assert manifest_warn["valid"] is True
+    assert manifest_warn["suggested_name"] == "neo4j-plugin"
+    assert len(manifest_warn["warnings"]) >= 2
+
+    manifest_strict = validate_plugin_manifest_v229(
+        {"name": "Neo4j_Plugin", "logo": ".github/logo.png"},
+        strict=True,
+    )
+    assert manifest_strict["valid"] is False
+    assert len(manifest_strict["errors"]) >= 2
