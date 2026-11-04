@@ -58,7 +58,7 @@ def validate_v229_plugin_metadata(manifest: Mapping[str, Any]) -> dict[str, Any]
         if repo_type != "git":
             errors.append("Field 'repository.type' must equal 'git'.")
         if not isinstance(repo_url, str) or not (
-            repo_url.startswith("https://") or repo_url.startswith("git+https://")
+            repo_url.startswith(("https://", "git+https://"))
         ):
             errors.append("Field 'repository.url' must be an HTTPS git URL.")
 
@@ -163,7 +163,7 @@ def validate_plugin_manifest_v229(
 
     logo = manifest.get("logo")
     if isinstance(logo, str) and logo:
-        if logo.startswith(("http://", "https://")) or logo.startswith(".github/") or not logo.endswith(".svg"):
+        if logo.startswith(("http://", "https://", ".github/")) or not logo.endswith(".svg"):
             target_bucket.append("Plugin logo should be a packaged relative .svg path outside .github/.")
 
     return {
